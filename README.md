@@ -1,335 +1,189 @@
-# Mass Effect Infiltrator — native ARM port
+# Mass Effect Infiltrator Bridge
 
-Runs the 2011 EA/IronMonkey **Mass Effect Infiltrator mobile** game on Linux/ARM handhelds by
-loading its original Android native library into a bionic/JNI compatibility
-layer. No emulator or Android runtime is involved.
+Запуск 32-битной **Mass Effect Infiltrator** (EA / IronMonkey Studios, v1.0.58, только `armeabi`) на 64-битных
+Android-телефонах, в которых нет поддержки AArch32. Проверено на OnePlus 13s (Snapdragon 8 Elite, Android 15).
 
-**Port and project by [EapRules](https://github.com/EapRules).**
+Игра исполняется в собственном пропатченном `qemu-arm` (linux-user), а её вызовы OpenGL ES пробрасываются
+на настоящий GPU телефона. Звук, касания, пауза и возврат в приложение работают.
 
-**Android bridge by [JamesCrumble](https://github.com/JamesCrumble).** This repository adds a way to run the
-port on 64-bit Android phones that have no AArch32 support: an APK wrapper (`apk/`), a patched `qemu-arm`
-(`qemu/`) that executes the ARM32 port, and a GLES bridge (`src/gl_bridge.*`, `apk/src/.../GlBridge.java`)
-that forwards the game's OpenGL ES calls to the phone's GPU. The port itself - loader, JNI layer, patches,
-PortMaster packaging - is EapRules' work and is described below as he wrote it.
+**Игра не распространяется.** Нужны ваши собственные APK версии 1.0.58 и cache-архив с данными игры.
 
-This directory targets the **v1.0.58 gamepad** build:
+[Состояние](#состояние) · [Установка](#установка) · [Настройки](#настройки) · [Как это устроено](#как-это-устроено) ·
+[Производительность](#производительность) · [Структура](#структура) · [Сборка](#сборка) · [Диагностика](#диагностика) ·
+[Лицензия и авторство](#лицензия-и-авторство)
 
-```text
-lib/armeabi/libMassEffect.so
-SHA1 ea58b733d3d267ab639431b50539542faa43f0d0
+## Состояние
+
+- Игра проходится: меню, миссии, бой, контрольные точки.
+- Скорость на OnePlus 13s при рендере 720p и лимите 120: меню 117–120 fps, в бою 98–120 (медиана 116).
+- Лимиты 30 и 90 и поведение игры на высокой частоте кадров (скорость анимации и физики) подробно не проверялись.
+- Проверено на одном устройстве. На других чипах возможны отличия в драйвере GLES.
+
+Скорость ограничивает не GPU, а процессор: игра упирается в один поток, а Android держит частоту ядер ниже
+максимума (см. [Производительность](#производительность)).
+
+## Установка
+
+Готовая сборка лежит на странице [Releases](https://github.com/JamesCrumble/mass-effect-infiltrator-bridge/releases):
+`MassEffect-Bridge-<версия>.apk` и `INSTALL.txt`.
+
+1. Установите APK (пакет `com.jamescrumble.meinfiltrator`).
+2. Положите в `/sdcard/Android/data/com.jamescrumble.meinfiltrator/files/` два файла: оригинальный APK игры 1.0.58
+   и cache-архив `.zip` с её данными. Имена не важны, важны расширения.
+3. Откройте приложение, при необходимости поменяйте настройки и нажмите «Играть».
+
+Первый запуск дольше обычного: распаковываются sysroot (~100 МБ) и данные игры. Если что-то не так, причина
+пишется на экране и в `meinfiltrator.log` в той же папке.
+
+**Обновление со старого имени пакета.** В первых тестовых сборках пакет назывался иначе, и для Android это другое
+приложение: поверх оно не обновится. Прогресс переносится так: сборка `APP_ID=<старый пакет> tools/build_install.sh noinstall`
+обновляет старое приложение и на его экране настроек выгружает сохранения в папку `migrate` рядом с файлами игры;
+эту папку нужно переложить в `Android/data/com.jamescrumble.meinfiltrator/files/`, новое приложение заберёт её при запуске игры.
+
+## Настройки
+
+Экран настроек открывается при старте приложения. Значения хранятся в `settings.txt` рядом с файлами игры.
+
+| Настройка | Ключ | Что делает |
+|---|---|---|
+| Разрешение рендера (высота) | `RENDER_HEIGHT` | 480 / 540 / 720, по умолчанию 720; ниже — быстрее и крупнее интерфейс |
+| Лимит кадров | `FPS_LIMIT` | 30 / 60 / 90 / 120, по умолчанию 60; та же частота запрашивается у экрана и задаётся ограничителю самой игры |
+| Счётчик FPS | `FPS_COUNTER` | Показывает fps поверх игры |
+| Буфер звука | `AUDIO_LATENCY_MS` | Размер буфера AudioTrack |
+| Плотность экрана для движка (DPI) | `MASSEFFECT_SCREEN_DPI` | Влияет на чувствительность управления; эксперимент |
+| Быстрая математика матриц (NEON) | `MASSEFFECT_NEON_MATH` | Авто / выкл / вкл: замена самых горячих функций игры |
+| Кадров «в полёте» | `MASSEFFECT_GL_INFLIGHT` | Сколько кадров мост может держать в очереди к GPU, по умолчанию 2 |
+| Только быстрые ядра (6–7) | `CPU_PRIME` | Привязывает qemu к двум самым быстрым ядрам; по умолчанию включено |
+| Профилирование в логе, TRACE | `PROFILING`, `TRACE` | Диагностика, см. ниже |
+
+Рядом с логом можно положить `resolution.txt` (например `1056x480`) и `cpu_mask.txt`: они важнее значений из меню.
+
+## Как это устроено
+
+```
+ APK-обёртка (Java, AArch64)                    дочерний процесс
+ ┌──────────────────────────────┐   pipe   ┌─────────────────────────────────────────┐
+ │ SettingsActivity             │ ◄──────► │ qemu-arm (наш патч, статический AArch64) │
+ │ MainActivity + SurfaceView   │  команды │  └ masseffect (порт-лоадер, ARM32, glibc)│
+ │ GlBridge: исполняет GLES     │   GLES   │      ├ bionic ELF loader                 │
+ │ AudioTrack, касания          │          │      ├ libMassEffect.so (игра)           │
+ │ PerfHint (ADPF, телеметрия)  │          │      ├ JNI и Android API на заглушках    │
+ └──────────────────────────────┘          │      └ GL-мост: сериализует вызовы GLES  │
+                                           └─────────────────────────────────────────┘
 ```
 
-## Current status
+- **Порт-лоадер** (`src/`, `loader/`, `thunks/`, `jni/`, `android/`) загружает библиотеку игры, собранную под bionic,
+  в процесс с glibc и подменяет libc, JNI и системные вызовы Android. Это порт Mass Effect Infiltrator для
+  PortMaster; его собственное описание — в [docs/PORT.md](docs/PORT.md).
+- **GL-мост** (`src/gl_bridge.cpp` ↔ `apk/src/.../GlBridge.java`): вызовы GLES 2.0 пишутся в pipe и исполняются
+  на стороне Java в контексте GLES 3 на SurfaceView.
+- **Звук**: вывод порта → FIFO → AudioTrack, темп задаёт динамик телефона.
+- **qemu** (`qemu/`): QEMU 11.1.2 с нашим патчем, см. ниже.
 
-The immutable harness reaches **M7/7** under qemu-arm + llvmpipe. The latest
-run, with real-time dummy audio consumption and the ARMv8 VFP compatibility
-patch enabled, reported:
+Подробный журнал разработки, выводы и тупиковые ветки — в [PROJECT_STATE.md](PROJECT_STATE.md).
 
-```text
-570 frames
-84 successful content opens
-151 texture uploads
-35,511 draw calls
-non-black framebuffer
-11 synthetic JNI keys
-4 measured scene changes
-```
+## Производительность
 
-That proves startup, content loading, rendering and input-driven progression in
-the harness. The PVRTC fallback is also confirmed on the real R36S Mali-G31:
-the previously white characters, objects and backgrounds now render correctly.
-The current candidate also initializes SDL audio, uses a bounded hardware
-period and expands the obsolete VFP short-vector mixer operations for ARMv8.
-Audio output, the new cursor/camera behavior, L2/R2 accelerometer gestures,
-saves and a complete play-through still require device testing.
+Штатный qemu исполняет игру слишком медленно, поэтому используется QEMU 11.1.2 с набором правок под
+AArch64-хост (подробно в [qemu/README.md](qemu/README.md)):
 
-## Bring your own game
+- **Плавающая точка на процессоре телефона.** Скалярные VFP-операции add/sub/mul/div вставляются прямо
+  в сгенерированный код одной командой, без вызова функции. Остальные операции VFP и преобразования float↔int
+  считаются одной командой процессора внутри хелпера вместо softfloat.
+- **NEON f32 целым регистром.** Сложение, вычитание, умножение, умножение с накоплением, сравнения и min/max
+  считаются сразу для всех четырёх элементов на NEON телефона, без переключения режима FPCR.
+- **Флаги и сравнения в коде.** Сравнения VCMP и запись флагов NZCV(Q) делаются в сгенерированном коде.
+- **Косвенные переходы.** Быстрый поиск блока для возвратов и вызовов по указателю: флаги собираются
+  на месте, кэш переходов увеличен с 4096 до 65536 записей и хранит всё нужное для попадания.
+- **Сцепление блоков** напрямую через границу страницы.
+- Обходы ограничений Android: системные вызовы, которые фильтр seccomp приложений запрещает, не используются.
 
-This repository and its packages contain no EA binary or asset. The supported
-donor is the **Mass Effect Infiltrator v1.0.58 gamepad build**, Android package
-`com.ea.games.meinfiltrator_gamepad`. Local developer runs give the loader an
-already-extracted directory with:
+Точность плавающей точки проверяется тестами `qemu/fptest.c`, `cmptest.c`, `neontest.c`, `neoncmptest.c`:
+результат должен совпадать с `QEMU_STRICT_FP=1` (чистый softfloat).
 
-```text
-masseffect/
-├── assets/
-│   ├── EAMCore.ini
-│   └── published/
-└── lib/
-    └── armeabi/
-        └── libMassEffect.so
-```
+Особенности этой игры:
 
-Run locally as:
+- У движка свой ограничитель кадров, зашитый на 60. Порт при загрузке заменяет это число значением лимита кадров
+  (`patch_fps_limit` в `src/patch.cpp`); без этого игра не поднималась выше ~61 fps при любой настройке.
+- На быстрых ядрах игра держит ~117 fps даже при заниженном потолке частоты, на средних — 75–80, поэтому привязка
+  к быстрым ядрам включена по умолчанию.
 
-```bash
-./build/masseffect /path/to/extracted/masseffect
-```
+Главный ограничитель на OnePlus 13s — политика энергосбережения системы: она опускает потолок частоты ядер
+при холодном телефоне, и fps идёт за этим потолком. Из приложения снять это ограничение не удалось.
 
-The PortMaster release also carries `eapx`, a content-based transactional
-first-boot extractor. Release users may place the supported APK, ZIP or an
-extracted folder in `ports/masseffect/`; its filename does not matter. eapx
-stages and validates the complete payload before publishing it. The native
-library is validated by critical regions, not a whole-file hash, so any
-legitimate v1.0.58 gamepad-build copy is accepted; the launcher additionally
-size-checks the `.so`. A complete game tree and reduced Vita-ready donors that
-keep the campaign are both supported.
+## Структура
 
-## Build and verify
+| Папка | Что |
+|---|---|
+| `src/`, `loader/`, `thunks/`, `jni/`, `android/` | порт Mass Effect Infiltrator для PortMaster: загрузчик bionic-ELF, JNI, переходники libc, патчи; в `src/` также GL-мост |
+| `ports/` | упаковка порта для PortMaster и его описание |
+| `apk/` | APK-обёртка: Java-код, манифест, сборка APK и sysroot |
+| `qemu/` | патчи qemu 11.1.2, Dockerfile для кросс-сборки, тесты точности, бенчмарк |
+| `tools/` | сборка и установка, логи, профилирование |
+| `docs/`, `analysis/`, `emulator/`, `harness/` | описание порта, проверочные программы и стенд для запуска на ПК |
 
-```bash
-docker run --rm -v "$PWD":/src -w /src masseffect-build make -j4
-timeout 400 harness/verify.sh
-```
+В репозитории нет файлов игры, тулчейнов и сборочных каталогов (см. `.gitignore`).
 
-`harness/verify.sh` is the read-only arbiter. Do not modify it or lower its
-thresholds.
+## Сборка
 
-To collect the redistributable ARM dependencies and make the game-data-free
-PortMaster zip:
+Сборка идёт в WSL (Ubuntu).
 
-```bash
-docker run --rm -v "$PWD":/src -w /src masseffect-build make libs
-./package_portmaster.sh
-```
+Нужны, кладутся в корень проекта и в git не входят:
 
-The zip is written to `build/masseffect-portmaster.zip`. It intentionally
-contains neither `libMassEffect.so` nor `assets/published`.
-
-## PortMaster install
-
-Use PortMaster's standard independent-autoinstall workflow:
-
-1. put our `masseffect-portmaster.zip` in PortMaster's `autoinstall/` directory
-   without renaming it;
-2. put the user's v1.0.58 gamepad-build APK/ZIP in `ports/masseffect/` (or an
-   extracted donor under `ports/masseffect/gamedata/`);
-3. open PortMaster and wait for the exact **Finished running autoinstall**
-   dialog; acknowledge it and let PortMaster return or close normally;
-4. reboot through the firmware menu, then launch Mass Effect Infiltrator from Ports. Do not
-   hard-power the console while PortMaster is still installing.
-
-The first launch extracts and validates the donor automatically. Complete
-CFW-specific paths, the two autoinstall gotchas and accepted donor layouts are
-in [`ports/masseffect/README.md`](ports/masseffect/README.md). The resulting
-layout is:
-
-```text
-ports/
-├── Mass Effect Infiltrator.sh
-└── masseffect/
-    ├── masseffect
-    ├── masseffect.gptk
-    ├── eapx.py
-    ├── masseffect.eapx.json
-    ├── libs.armhf/
-    ├── assets/                # your copy
-    ├── lib/armeabi/           # your copy
-    └── var/                   # saves/settings
-```
-
-The launcher follows PortMaster's `directory` variable, so it works from
-either `/roms` or `/roms2`. It also refreshes only Mass Effect Infiltrator's normalized
-ArkOS artwork at `ports/images/Mass Effect Infiltrator.png` when a direct update left an old
-APK icon cached there; the canonical portable cover remains
-`masseffect/cover.png` as required by PortMaster's `gameinfo.xml` format.
-
-## Controls
-
-This binary has no `AInputQueue` imports. Input is delivered through its
-exported JNI entry points, matching the working Vita port:
-
-- title/menus: D-pad moves a visible software cursor, A taps it
-- L3 or R3 toggles the menu cursor after it has been dismissed
-- Start restores the cursor while opening the pause menu
-- L2 simulates the accelerometer tilt used to rotate/switch weapon fire mode
-- R2 simulates the accelerometer motion required for a Zero-G jump
-- buttons outside cursor mode → `KeyboardAndroid.NativeOnKeyDown/Up`
-- left stick → virtual touchscreen movement stick
-- right stick → virtual touchpad aiming stick
-
-The original game's menus do not support gamepad navigation; the Vita port
-uses its physical touchscreen. The cursor is therefore a required input
-bridge on non-touch PortMaster handhelds, not optional decoration. Moving
-either analog stick dismisses it so the same controls can drive gameplay.
-
-The pointer callback uses base AAPCS because the game is softfp and the loader
-is hardfp.
-
-## Graphics and real-device status
-
-The first `d4ca229` build was tested on an R36S with its Mali-G31 driver:
-
-- the image is correctly centred at 640x480;
-- the D-pad cursor and physical controls work and can advance through menus;
-- menu UI is visible;
-- 3D characters, objects and backgrounds render mostly white, sometimes with
-  only an edge, shadow or silhouette visible;
-- audio is not working yet.
-
-The interactive emulator reproduced that exact visual failure. Per-call GL
-diagnostics identified rejected `glCompressedTexImage2D` uploads:
-`0x8c00/0x8c02` are PVRTC1 4bpp RGB/RGBA, formats unsupported by both llvmpipe
-and Mali-G31. The loader now uses Imagination's MIT-licensed decoder and
-uploads RGBA8888 when the driver does not advertise native PVRTC.
-
-A subsequent local capture rendered the complete menu environment with its
-textures, lighting and materials, and the immutable harness remained M7/7. The
-candidate with SHA-256
-`9199544a9db9113e20facac61fb518dfc892beff35f17156ff3e313924a015da`
-was then tested on the real R36S and the user confirmed that the full 3D scene
-also renders correctly there.
-
-That hardware pass exposed two isolated input issues in the otherwise working
-controls: the provisional cross cursor could not be recovered after analog
-input, and a held right stick produced only one finite camera gesture. The next
-candidate replaces the cross with a high-contrast arrow, restores it with
-L3/R3 or Start, refreshes sticks every frame and reproduces the Vita port's
-per-frame right-touchpad gesture.
-
-The same candidate addresses the silent audio path. `AudioTrack` used to call
-`SDL_OpenAudioDevice` without ever initializing `SDL_INIT_AUDIO`, then silently
-kept device ID zero. It also confused the engine's 1 MiB producer ring with a
-hardware period and requested a roughly six-second buffer. Audio now has
-explicit initialization, device enumeration/fallback and a 1024-frame period.
-The game's 40 obsolete VFP short-vector mixer instructions are expanded into
-validated scalar A32 trampolines for the Cortex-A35, which ignores FPSCR
-LEN/STRIDE. A qemu register-level self-test proves all 40 expansions reproduce
-the original vector operations, while a disassembly audit proves the list
-covers all 40 arithmetic opcodes in all 20 LEN regions. The local dummy device
-confirms the queue is consumed in real time; audible speaker output awaits the
-R36S test.
-
-Current device-test binary:
-
-```text
-SHA256 d0ba9983a13a1cf7dbd7a7c5c26d57d544cd9e435ffe80308a03799ea20390de
-size   7215740 bytes
-```
-
-## ROCKNIX
-
-Set the device's GPU driver to **libmali** (ROCKNIX's own setting; `gpudriver`
-reports the current one). The port has been confirmed running that way on an
-RG DS.
-
-In **panfrost** mode it now reaches a live GL context — earlier releases could
-not, because the port's bundled libraries shadowed what Mesa's driver needed
-and glvnd then loaded no driver at all — but it renders black and crashes
-shortly after. That is a fixed-function GLES 1.1 path on Mesa/Panfrost, which
-is a different problem from this port's; the crash lands on an address that is
-really the value of `GL_NEAREST`, so somewhere a call goes through what the
-engine stored as an enum. Recorded here in case anyone wants to pick it up.
-
-## Interactive local emulator
-
-`emulator/run.sh` keeps the qemu-arm + Mesa build alive and exposes cursor,
-touch, controls, screenshots and logs through a shared control directory.
-`emulator/mcp_server.py` publishes the same operations as an MCP server. See
-`emulator/README.md`.
-
-This path reproduced the real-device graphics failure locally and then
-verified the PVRTC software fallback visually: the same menu now has a fully
-textured 3D environment. The immutable M1-M7 harness remains separate and
-unchanged.
-
-## Diagnostics
-
-Every device launch writes `ports/masseffect/log.txt`. Important lines:
-
-```text
-TRACE: module loaded
-TRACE: mounted extracted content at /published
-TRACE: VFP short vectors: expanded 40/40 audio instructions
-TRACE: AudioTrack: SDL audio ready driver=...
-TRACE: AudioTrack: opened device=...
-TRACE: AudioTrack: PCM write=...
-TRACE: framebuffer non-black
-TRACE: summary assets=N textures=N draws=N
-FATAL: ...
-```
-
-Never redistribute the game `.so` or extracted assets.
-
-
-## Android APK (OnePlus 13s и другие AArch64-телефоны без AArch32)
-
-Папка `apk/` — обёртка по образцу `../nova3probe`: игра (ARM32) исполняется в собственном qemu-arm 11.1.2
-(в APK как `libqemu.so`), все вызовы GLES2 уходят через пайп на GPU телефона (`src/gl_bridge.cpp` на стороне
-гостя, `apk/src/com/jamescrumble/meinfiltrator/GlBridge.java` на стороне Android). Сборка и установка:
-`tools/build_install.sh` (только `noinstall` — без установки), цикл отладки: `tools/iter.sh`.
-Данные игры (APK + cache zip, не в репозитории) кладутся в `Android/data/com.jamescrumble.meinfiltrator/files/`;
-первый запуск распаковывает их в приватную папку приложения.
-
-Игра этой сборки — чистый GLES2 (177 импортов `gl*`), а не GLES1 (упоминания GLES1 выше относятся к соседнему порту).
-
-### Как были найдены коды событий указателя (touch)
-
-Игра принимает касания через экспорт `Java_com_ea_blast_TouchSurfaceAndroid_NativeOnPointerEvent(env, obj,
-rawEvent, module, id, x, y)`. Значения `rawEvent` НЕ универсальны: их возвращают экспорты
-`Java_com_ea_blast_TouchSurfaceAndroid_NativeGetIdRawPointerDown/Move/Up`, и в каждой сборке они свои.
-Порт с хардкодом `0x6000c/0x4000c/0x8000c` (значения другой сборки) молча игнорировался движком:
-касания доходили до `NativeOnPointerEvent`, но не распознавались. Как узнать значения для конкретной
-`libMassEffect.so`:
+- `jdk/` — JDK 17;
+- `android-sdk/` — build-tools 34.0.0, platform 34, platform-tools;
+- `sdl-arm/` — SDL2 под armhf (исходники в `third_party/SDL2-2.0.22.tar.gz`);
+- системный armhf-тулчейн (`gcc-arm-linux-gnueabihf`, `g++-arm-linux-gnueabihf`) и Docker для qemu;
+- `gamebin/` — ваши файлы игры: APK версии 1.0.58 и cache-архив `.zip`; оба затем кладутся на телефон
+  (см. [Установка](#установка));
+- `medata/` — только для запуска на ПК: те же файлы в распакованном виде.
 
 ```sh
-readelf --dyn-syms -W libMassEffect.so | grep NativeGetIdRawPointer      # адреса экспортов
-arm-linux-gnueabihf-objdump -d --start-address=0x35ae94 --stop-address=0x35aea0 libMassEffect.so
+source env.sh
+./build.sh                         # порт: build/masseffect (ARM32)
+tools/build_install.sh             # порт + APK + установка на телефон по adb
+tools/build_install.sh noinstall   # то же без установки
+tools/make_apk_release.sh          # релизный APK, архив исходников и INSTALL.txt в release/<версия>/
 ```
 
-Каждая функция — три инструкции `mov r0,#N; add r0,r0,#14; bx lr`. Для v1.0.58 gamepad (SHA1 ea58b733…):
-Down = 0x60000+14 = **0x6000e**, Move = 0x40000+14 = **0x4000e**, Up = 0x80000+14 = **0x8000e**
-(`android/input_bridge.cpp`, enum `ID_RAW_POINTER_*`). Для другой сборки пересчитать так же.
+Телефон из WSL виден через виндовый `adb.exe`: используйте обёртку `tools/adb`.
+`tools/make_release.sh` и `package_portmaster.sh` собирают пакет порта для PortMaster, а не APK.
 
-Также для телефона нужно сообщить движку, что тачскрин есть: `MASSEFFECT_TOUCH=1` заставляет
-`TouchSurfaceAndroid.IsTouchScreenMultiTouch` вернуть true (`jni/classes/ea_sensors.cpp`).
+### qemu
 
-### Отладка с компьютера без касаний по экрану
+Исходники QEMU 11.1.2 распаковываются в `qemu-src/qemu-11.1.2`, на них по порядку накладываются
+`qemu/patches/nova3.patch`, `neon_nofpcr.patch` и `fast_fp_inline.patch`.
 
-Строки файла `inject.txt` рядом с логом (`Android/data/<pkg>/files/`) приложение один раз ставит в очередь команд порта
-и удаляет файл (`GameProcess.injectLoop`): `touch 1 x y id` / `touch 0 x y id` (down/up, координаты в пикселях рендера),
-`button a down|up`, `sleep <мс>`. Скриншот: `adb shell screencap -p`. Экран телефона должен быть включён.
+```sh
+docker build -t masseffect-qemu-build qemu
+docker run --rm -u 1000:1000 -e HOME=/tmp -v "$PWD":/work masseffect-qemu-build \
+  bash /work/qemu/build_variant.sh F \
+  '-DNOVA3_JMP_BITS=16 -DNOVA3_FAST_LOOKUP -DNOVA3_NEON_NOFPCR -O3 -march=armv8.2-a+lse+rcpc+dotprod -mtune=neoverse-v1'
+```
 
-### Текстуры и шрифт на телефоне (что было сломано и почему)
+Результат — `qemu/out/qemu-arm-F.stripped`, его забирает сборка APK; `ME_QEMU_VARIANT=E` собирает APK
+с прежним вариантом. Не добавляйте SVE в `-march`: у ядер Oryon его нет. Имена файлов патчей и макросов `NOVA3_*`
+исторические, менять их не нужно. Наложение трёх патчей на чистые исходники с нуля не перепроверялось:
+вариант F собран в дереве проекта Shadowgun Bridge и перенесён сюда файлом.
 
-- **Тёмные силуэты вместо текстур в 3D.** `src/symtab_glprobe.cpp` (обёртки загрузки текстур) искал `glGetString`,
-  `glTexImage2D` и `glCompressedTexImage2D` через `SDL_GL_GetProcAddress`. В режиме моста SDL-контекста нет, функции
-  оказывались NULL, поэтому поддержка DXT/ATC считалась «отсутствующей», а загрузки молча терялись. Решение —
-  `#include "gl_bridge.h"` в этом файле: макрос перенаправляет `SDL_GL_GetProcAddress` на мост. После этого DXT1/3/5 уходят
-  на Adreno нативно (в логе: `S3TC: native driver support - DXT1 present, DXT3/DXT5 present`). Любой новый файл порта,
-  который ищет GL-функции через SDL, должен подключать `gl_bridge.h`.
-- **Квадраты вместо кириллицы в подсказках загрузки.** Движок открывает `/system/fonts/DroidSans(Fallback).ttf`, а порт
-  подменял его шрифтом игры (`EurostileLTStd.ttf`, без кириллицы). На Android настоящие системные шрифты есть,
-  поэтому `MASSEFFECT_SYSTEM_FONT=/system/fonts/RobotoStatic-Regular.ttf` (задаёт `GameProcess`) заменяет подмену (`fix_path`, правило 0).
-- Диагностика: в логе гость один раз пишет формат каждой загрузки текстуры (`gl bridge: texture upload ...`).
+## Диагностика
 
-### Кнопки «Да/Нет» без текста и `STRING_TAPTOAIM_WARNING`
+- Лог игры: `tools/pull_log.sh` → `logs/phone.log`. Строка `[gl] frames` раз в несколько секунд показывает fps,
+  число GL-команд, загрузку моста, текущую частоту и потолок частоты ядра.
+- Быстрый просмотр fps и поиск по логу: `tools/fps.sh`, `tools/grep_log.sh`; цикл «собрать — поставить — посмотреть» —
+  `tools/iter.sh`.
+- Профиль кода игры и счётчики системных вызовов пишутся в лог, пока включена настройка «Профилирование в логе».
+- Профиль самого qemu: `simpleperf record --app com.jamescrumble.meinfiltrator -p <pid qemu> -e cpu-clock`
+  (приложение `profileable`), адреса сопоставляются с символами несжатой сборки qemu.
+- Частоты, ядра и температуры: `tools/cpu_diag.sh`.
 
-- В `strings/ENG_US/masseffect.bin` русский патч лежит поверх английского и оставляет ключи `NO` и `YES` без значений
-  (индекс значения = 0, пустая строка): диалоги подтверждения показывают пустые кнопки. `apk/.../StringsFix.java`
-  при каждом старте (идемпотентно) дописывает в таблицу «Нет» и «Да». Формат SBIN v3: чанк `DATA` (записи пар из u16: id, значение, …),
-  `CHDR` — массив элементов (offset, length), `CDAT` — NUL-строки, смещения от `CDAT+12`; для правки добавляются 2 элемента в `CHDR`,
-  2 строки в конец `CDAT`, обновляются размеры чанков и индекс значения у записей NO/YES.
-  **Важно:** у каждого чанка в заголовке (`tag, size, hash`) хранится хэш FNV-1 (basis 0x811c9dc5, prime 0x01000193) от его содержимого;
-  при несовпадении движок отвергает всю таблицу и все строки превращаются в `XXXXX[KEY]XXXXX`. Поэтому любая правка
-  `masseffect.bin` обязана пересчитать хэши `DATA`, `CHDR`, `CDAT` (`StringsFix.rehash`). Первые две попытки без пересчёта хэшей
-  сломали все строки (в том числе правка всего в 3 байта). Тот же алгоритм на Python: `scratch/fixstr.py`
-  (результат Java и Python сверен побайтно).
-- Надпись `XXXXX[STRING_TAPTOAIM_WARNING]XXXXX` — это не ошибка порта: ключа нет ни в одной таблице строк игры, он есть только в коде
-  (движок так показывает любую отсутствующую строку). Диалог появляется при переключении режима «Tap to Aim» в настройках.
+## Лицензия и авторство
 
-### Меню настроек, звук и NEON-математика (2026-10-11)
+GPL-3.0, см. [LICENSE](LICENSE). Происхождение заимствованных частей и их лицензии — в [NOTICE.md](NOTICE.md).
+Патч qemu — GPL-2.0-or-later, как сам QEMU.
 
-Иконка открывает `SettingsActivity`; «Играть» сохраняет `settings.txt` (рядом с логом, `KEY=VALUE`) и запускает игру заново.
-Ключи `MASSEFFECT_*` уходят порту как переменные окружения, остальные — переключатели обёртки (`RENDER_HEIGHT`, `FPS_COUNTER`,
-`AUDIO_LATENCY_MS`, `CPU_PRIME`, `PROFILING`, `TRACE`); всё применяется в `GameProcess.applySettings` после `engine_env.txt`.
+Порт Mass Effect Infiltrator для PortMaster, на котором основан проект (`src/`, `loader/`, `thunks/`, `jni/`,
+`android/`, `ports/`), создан EapRules. Android-мост — APK-обёртка `apk/`, проброс GLES на GPU телефона
+(`src/gl_bridge*`), патчи qemu (`qemu/`) и скрипты для телефона в `tools/` — написан JamesCrumble.
 
-**Звук.** SDL-драйвер `disk` сам себя тактирует сном, который не равен периоду, поэтому шёл чуть быстрее реального времени, и
-запас копился в пайпе и буфере `AudioTrack` (звук отставал до ~0,75 с). Теперь темп задаёт динамик: сон короче периода
-(`SDL_DISKAUDIODELAY=15`), пайп ужат до одного периода (4096 байт), буфер трека минимальный. Поток SDL блокируется на пайпе.
-
-**NEON-матрицы** (`src/neon_math_patch.cpp`). Четыре умножения `Vectormath::Aos::Matrix4` — верх профиля игры — заменены
-NEON-телами той же арифметики (тот же порядок VMUL/VMLA, результат бит-в-бит кроме денормалей и NaN). Выигрыш зависит от
-процессора под игрой (в нашем qemu переход VFP<->NEON стоит записи FPCR), поэтому при старте порт замеряет оригинал и NEON
-и ставит только то, что быстрее с запасом 15%; результат — строки `neon math:` в логе. `MASSEFFECT_NEON_MATH=0` выключает,
-`=1` ставит без замера.
+Mass Effect Infiltrator © Electronic Arts. Проект не связан с правообладателем и не содержит файлов игры.

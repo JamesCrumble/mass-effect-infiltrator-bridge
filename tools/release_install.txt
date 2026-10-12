@@ -1,0 +1,30 @@
+Mass Effect Infiltrator Bridge - установка
+==========================================
+
+Mass Effect Infiltrator (EA / IronMonkey Studios, v1.0.58, только 32-бит) на 64-битном телефоне через qemu-user
+и проброс GLES на GPU. Проверено на OnePlus 13s (Snapdragon 8 Elite, Android 15).
+
+Файлы игры в комплект не входят: нужен ваш собственный APK игры версии 1.0.58 и cache-архив с её данными.
+
+1. Установить MassEffect-Bridge-<версия>.apk (пакет com.jamescrumble.meinfiltrator).
+
+2. Положить файлы игры (по adb или любым файловым менеджером) в папку
+
+   /sdcard/Android/data/com.jamescrumble.meinfiltrator/files/
+
+       <оригинальный APK игры 1.0.58>.apk
+       <cache-архив с данными игры>.zip
+
+   Имена файлов не важны, важны расширения: один .apk и один .zip.
+
+   Пример:
+       adb push Mass-Effect-Infiltrator-v1-0-58.apk /sdcard/Android/data/com.jamescrumble.meinfiltrator/files/
+       adb push Mass-Effect-Infiltrator-v1-0-58-cache.zip /sdcard/Android/data/com.jamescrumble.meinfiltrator/files/
+
+3. Открыть приложение: сначала появятся настройки (разрешение, лимит кадров, звук, привязка к быстрым ядрам),
+   кнопка "Играть" запускает игру. Первый запуск дольше: распаковываются sysroot (~100 МБ) и данные игры.
+
+Если игра не стартует, причина пишется на экране и в файл
+/sdcard/Android/data/com.jamescrumble.meinfiltrator/files/meinfiltrator.log
+
+Исходники и описание сборки: https://github.com/JamesCrumble/mass-effect-infiltrator-bridge
