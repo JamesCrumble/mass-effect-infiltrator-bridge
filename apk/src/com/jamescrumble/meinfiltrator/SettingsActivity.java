@@ -89,6 +89,8 @@ public final class SettingsActivity extends Activity {
         col.addView(choice("Разрешение рендера (высота)", "RENDER_HEIGHT", new int[] { 480, 540, 720 }, null, 720, "p",
                 "Ширина считается по пропорциям экрана. Ниже — быстрее и крупнее интерфейс. Файл resolution.txt рядом с логом важнее этого значения."));
 
+        col.addView(choice("Лимит кадров", "FPS_LIMIT", new int[] { 30, 60, 90, 120 }, null, 60, " fps",
+                "Целевая частота игры и экрана. Выше 60 имеет смысл, если игра успевает: иначе кадры будут пропускаться."));
         col.addView(toggle("Счётчик FPS", "FPS_COUNTER", true, "Маленькая зелёная цифра вверху по центру экрана."));
 
         col.addView(section("Звук"));

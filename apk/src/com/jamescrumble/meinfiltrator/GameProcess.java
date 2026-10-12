@@ -397,7 +397,10 @@ final class GameProcess {
         appendLog("[wrapper] " + b.command());
         process = b.start();
         final Process p = process;
-        perf.start(p);
+        int fpsLimit = 60;
+        try { fpsLimit = Integer.parseInt(SettingsActivity.load(ctx).getOrDefault("FPS_LIMIT", "60")); } catch (NumberFormatException ignored) { }
+        gl.setFrameLimit(fpsLimit);
+        perf.start(p, fpsLimit);
         new Thread(this::writerLoop, "me-commands").start();
         new Thread(this::injectLoop, "me-inject").start();
         new Thread(this::audioLoop, "me-audio").start();
