@@ -1,5 +1,12 @@
 # Mass Effect Infiltrator Bridge
 
+**English:** run **Mass Effect Infiltrator 1.0.58** (EA / IronMonkey Studios, 32-bit ARM) on 64-bit-only Android
+phones that have no AArch32 support. The game runs under a patched `qemu-user`, and its OpenGL ES calls are
+forwarded to the phone's real GPU. Up to 120 fps on a OnePlus 13s (Snapdragon 8 Elite). No game files are
+included: you need your own copy. Ready-made APK:
+[Releases](https://github.com/JamesCrumble/mass-effect-infiltrator-bridge/releases).
+The rest of this page is in Russian.
+
 Запуск 32-битной **Mass Effect Infiltrator** (EA / IronMonkey Studios, v1.0.58, только `armeabi`) на 64-битных
 Android-телефонах, в которых нет поддержки AArch32. Проверено на OnePlus 13s (Snapdragon 8 Elite, Android 15).
 
@@ -10,7 +17,7 @@ Android-телефонах, в которых нет поддержки AArch32.
 
 [Состояние](#состояние) · [Установка](#установка) · [Настройки](#настройки) · [Как это устроено](#как-это-устроено) ·
 [Производительность](#производительность) · [Структура](#структура) · [Сборка](#сборка) · [Диагностика](#диагностика) ·
-[Лицензия и авторство](#лицензия-и-авторство)
+[Другие игры](#другие-игры) · [Лицензия и авторство](#лицензия-и-авторство)
 
 ## Состояние
 
@@ -176,6 +183,13 @@ docker run --rm -u 1000:1000 -e HOME=/tmp -v "$PWD":/work masseffect-qemu-build 
 - Профиль самого qemu: `simpleperf record --app com.jamescrumble.meinfiltrator -p <pid qemu> -e cpu-clock`
   (приложение `profileable`), адреса сопоставляются с символами несжатой сборки qemu.
 - Частоты, ядра и температуры: `tools/cpu_diag.sh`.
+
+## Другие игры
+
+Тот же способ запуска — qemu-user и мост GLES на GPU телефона — для других 32-битных игр:
+
+- [Shadowgun Bridge](https://github.com/JamesCrumble/shadowgun-bridge) — SHADOWGUN 1.7.0 (Unity 5.3)
+- [NOVA3 Bridge](https://github.com/JamesCrumble/NOVA3-Bridge) — N.O.V.A. 3 1.0.7
 
 ## Лицензия и авторство
 
