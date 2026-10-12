@@ -386,7 +386,7 @@ final class GameProcess {
         // cores. The frequency limiter caps clusters differently from moment to moment, and the scheduler keeps
         // moving the game's one busy thread onto whichever is free - often a capped one.
         String mask = readText(new File(logFile.getParentFile(), "cpu_mask.txt")).trim();
-        if (mask.isEmpty() && "1".equals(settings.get("CPU_PRIME"))) mask = "c0";
+        if (mask.isEmpty() && !"0".equals(settings.get("CPU_PRIME"))) mask = "c0";
         if (diag.exists()) mask = "";
         if (mask.matches("[0-9a-fA-F]{1,4}")) {
             b.command().add(0, "/system/bin/taskset");
