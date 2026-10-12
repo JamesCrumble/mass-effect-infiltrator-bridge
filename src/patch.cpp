@@ -96,6 +96,8 @@
 #include "render_sort_patch.h"
 #include "patch.h"
 
+#include <stdlib.h>
+
 extern uintptr_t so_alloc_arena(so_module *so, uintptr_t range,
                                 uintptr_t dst, size_t size);
 
@@ -353,9 +355,34 @@ static void patch_kill_network(so_module *mod)
     }
 }
 
+/*
+ * The engine's own frame limiter (EA::Blast::FpsLimiter). System::CreateFpsLimiter builds it with a
+ * constant 60 - "mov r1, #60" at +0x35c1d0 - and the limiter keeps the period in whole milliseconds
+ * (1000 / 60 = 16 ms, the ~61 fps the game tops out at). MASSEFFECT_TARGET_FPS replaces the constant;
+ * the wrapper passes its frame-limit setting there.
+ */
+static void patch_fps_limit(so_module *mod)
+{
+    const char *v = getenv("MASSEFFECT_TARGET_FPS");
+    long fps = v && *v ? strtol(v, NULL, 10) : 0;
+    uint32_t *addr = (uint32_t *)(mod->text_base + 0x0035c1d0);
+
+    if (fps <= 0 || fps == 60)
+        return;
+    if (fps < 15) fps = 15;
+    if (fps > 240) fps = 240;
+    if (*addr != 0xe3a0103c) {
+        warning("fps limit patch at +0x0035c1d0: expected e3a0103c, found %08x - skipped.\n", *addr);
+        return;
+    }
+    *addr = 0xe3a01000 | (uint32_t)fps;      /* mov r1, #fps */
+    trace("patched +0x0035c1d0: engine frame limiter %ld fps", fps);
+}
+
 void so_patch_binary(so_module *mod)
 {
     patch_kill_network(mod);
+    patch_fps_limit(mod);
 
     /*
      * Every patch is checked against the instruction it expects to replace

@@ -354,6 +354,8 @@ final class GameProcess {
         env.put("MASSEFFECT_TOUCH", "1");
         env.put("MASSEFFECT_SYSTEM_FONT", "/system/fonts/RobotoStatic-Regular.ttf");
         env.put("MASSEFFECT_SAVEDIR", new File(root, "save").getPath());
+        // The engine has its own limiter, fixed at 60: the port patches its constant from this.
+        env.put("MASSEFFECT_TARGET_FPS", SettingsActivity.load(ctx).getOrDefault("FPS_LIMIT", "60"));
         // An ordinary touch phone to the engine: its own on-screen controls, no PowerA pad until one is used.
         File dir = logFile.getParentFile();
         // engine_env.txt: KEY=VALUE per line, added to the port environment.
