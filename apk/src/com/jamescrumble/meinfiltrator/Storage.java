@@ -149,9 +149,10 @@ final class Storage {
     // ------------------------------------------------------------ moving
 
     /**
-     * With access: makes the shared folder and moves everything from the legacy folder into it. A file that
-     * is already there stays; the legacy copy is dropped only when it has the same size. Returns the number
-     * of files moved. Safe to call often and from any thread.
+     * With access: makes the shared folder and moves everything from the legacy folder into it, file by file
+     * (copy under a ".part" name, rename, delete the original, size checked). A file that is already there stays; the
+     * legacy copy is dropped only when it has the same size, and a smaller one (a cut-short earlier move) is replaced.
+     * Returns the number of files moved. Safe to call often, from any thread, and to be interrupted.
      */
     static synchronized int migrate(Context c, Progress p) {
         File main = mainDir(c), legacy = legacy(c);
@@ -166,7 +167,8 @@ final class Storage {
     private static int moveInto(File src, File dst, Progress p) {
         try {
             if (src.isDirectory()) {
-                if (!dst.exists() && src.renameTo(dst)) return count(dst);
+                // Never a directory rename: it may be a copy inside the storage service that an interruption
+                // leaves half done. Files are moved one by one below.
                 if (!dst.isDirectory() && !dst.mkdirs()) return 0;
                 int n = 0;
                 File[] list = src.listFiles();
@@ -176,30 +178,34 @@ final class Storage {
             }
             if (!src.isFile()) return 0;
             if (dst.exists()) {
-                if (dst.length() == src.length()) src.delete();
-                return 0;
+                // Same size: it is the same file, the legacy copy is not needed. Smaller than the original: an earlier
+                // move was cut short, the original is still whole, so copy it again. Anything else is left alone.
+                if (dst.length() == src.length()) {
+                    src.delete();
+                    return 0;
+                }
+                if (dst.length() > src.length()) return 0;
             }
-            if (src.renameTo(dst)) return 1;
             if (p != null) p.status("Перенос в " + dst.getParentFile().getPath() + "…\n" + src.getName());
+            // Copy under a temporary name and rename in the same folder: the final name never holds half a file.
             File tmp = new File(dst.getPath() + ".part");
+            tmp.delete();
             copyFile(src, tmp);
-            if (tmp.length() != src.length() || !tmp.renameTo(dst)) {
+            if (tmp.length() != src.length()) {
                 tmp.delete();
                 return 0;
             }
+            dst.delete();
+            if (!tmp.renameTo(dst)) {
+                tmp.delete();
+                return 0;
+            }
+            dst.setLastModified(src.lastModified());
             src.delete();
             return 1;
         } catch (IOException e) {
             return 0;
         }
-    }
-
-    private static int count(File f) {
-        if (f.isFile()) return 1;
-        File[] list = f.listFiles();
-        int n = 0;
-        if (list != null) for (File c : list) n += count(c);
-        return n;
     }
 
     // ------------------------------------------------------------ saves

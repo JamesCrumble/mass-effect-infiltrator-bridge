@@ -200,7 +200,7 @@ public final class SettingsActivity extends Activity {
     /** Creates BridgeGames/<package> and moves the files of Android/data into it (off the UI thread: it may copy). */
     private void moveFiles() {
         new Thread(() -> {
-            int n = Storage.migrate(getApplicationContext(), null);
+            int n = Storage.migrate(getApplicationContext(), t -> runOnUiThread(() -> folderInfo.setText(t)));
             runOnUiThread(() -> {
                 showFolder();
                 if (n > 0) Toast.makeText(this, "Файлов перенесено в BridgeGames: " + n, Toast.LENGTH_LONG).show();
