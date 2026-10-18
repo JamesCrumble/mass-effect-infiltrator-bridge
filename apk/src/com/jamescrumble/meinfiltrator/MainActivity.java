@@ -36,7 +36,7 @@ public final class MainActivity extends Activity {
     private enum Phase { SETUP, LOADING, PLAYING, ERROR }
 
     private static final int MAX_POINTERS = 20;
-    private static final int ZONE_NONE = 0, ZONE_LEFT = 1, ZONE_RIGHT = 2, ZONE_CURSOR = 3, ZONE_BUTTON = 4;
+    private static final int ZONE_NONE = 0, ZONE_LEFT = 1, ZONE_RIGHT = 2, ZONE_CURSOR = 3;
 
     /*
      * One game per app process. The activity can be recreated while qemu keeps running (a config change the
@@ -226,7 +226,7 @@ public final class MainActivity extends Activity {
 
     /** The engine is told about a pad the first time one is used, as the phone build's MOGA listener does. */
     private void padUsed() {
-        if (!game.touchMode() || padOn) return;
+        if (padOn) return;
         padOn = true;
         overlay.releaseFingers();
         game.command("pad 1", null);
@@ -275,7 +275,7 @@ public final class MainActivity extends Activity {
         int action = e.getAction();
         boolean edge = (action == KeyEvent.ACTION_DOWN && e.getRepeatCount() == 0) || action == KeyEvent.ACTION_UP;
         // On a phone Back belongs to the game (its menus and pause), as in the original activity.
-        if (e.getKeyCode() == KeyEvent.KEYCODE_BACK && game.touchMode() && phase == Phase.PLAYING) {
+        if (e.getKeyCode() == KeyEvent.KEYCODE_BACK && phase == Phase.PLAYING) {
             if (edge) game.command("key 4 " + (action == KeyEvent.ACTION_DOWN ? "down" : "up"), null);
             return true;
         }
@@ -328,24 +328,11 @@ public final class MainActivity extends Activity {
 
     // ------------------------------------------------------------ overlay
 
-    private static final class Button {
-        final String label, name;
-        final RectF rect = new RectF();
-        Button(String label, String name) { this.label = label; this.name = name; }
-    }
-
     private final class Overlay extends View {
         private final float density = getResources().getDisplayMetrics().density;
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final RectF bar = new RectF();
-        private final Button[] buttons = {
-            new Button("L1", "l1"), new Button("R1", "r1"), new Button("A", "a"),
-            new Button("B", "b"), new Button("X", "x"), new Button("Y", "y"),
-            new Button("II", "start"),
-        };
-
         private final int[] zone = new int[MAX_POINTERS];
-        private final int[] buttonOf = new int[MAX_POINTERS];
         private final float[] originX = new float[MAX_POINTERS], originY = new float[MAX_POINTERS];
         private int cursorPointer = -1;
         private int seenEpoch;
@@ -355,24 +342,9 @@ public final class MainActivity extends Activity {
             setFocusable(true);
         }
 
-        @Override protected void onSizeChanged(int w, int h, int ow, int oh) {
-            float s = 48 * density, gap = 8 * density, margin = 16 * density;
-            float rowW = 3 * s + 2 * gap;
-            float left = (w - rowW) / 2f;
-            float bottom = h - margin;
-            for (int i = 0; i < 6; i++) {
-                int row = 1 - i / 3, col = i % 3;
-                float x = left + col * (s + gap), y = bottom - (row + 1) * s - row * gap;
-                buttons[i].rect.set(x, y, x + s, y + s);
-            }
-            buttons[6].rect.set((w - s) / 2f, margin, (w + s) / 2f, margin + s);
-        }
-
         @Override protected void onDraw(Canvas c) {
             Phase p = phase;
             if (p == Phase.PLAYING) {
-                // In phone mode the engine draws its own controls.
-                if (!menuMode && (!game.touchMode() || padOn)) drawButtons(c);
                 if (showFps) drawFps(c);
             } else {
                 drawLoading(c, p, SystemClock.uptimeMillis());
@@ -392,18 +364,6 @@ public final class MainActivity extends Activity {
             c.drawRect(x - w, y - 14 * density, x + w, y + 5 * density, paint);
             paint.setColor(0xff7cfc00);
             c.drawText(s, x, y, paint);
-        }
-
-        private void drawButtons(Canvas c) {
-            paint.setTextAlign(Paint.Align.CENTER);
-            paint.setTextSize(16 * density);
-            for (Button b : buttons) {
-                paint.setStyle(Paint.Style.FILL);
-                paint.setColor(0x55ffffff);
-                c.drawRoundRect(b.rect, 12 * density, 12 * density, paint);
-                paint.setColor(0xddffffff);
-                c.drawText(b.label, b.rect.centerX(), b.rect.centerY() + 6 * density, paint);
-            }
         }
 
         private void drawLoading(Canvas c, Phase p, long now) {
@@ -460,14 +420,6 @@ public final class MainActivity extends Activity {
             if (id >= MAX_POINTERS) return;
             zone[id] = ZONE_NONE;
             if (!menuMode) {
-                for (int i = 0; i < buttons.length; i++) {
-                    if (buttons[i].rect.contains(x, y)) {
-                        zone[id] = ZONE_BUTTON;
-                        buttonOf[id] = i;
-                        game.command("button " + buttons[i].name + " down", null);
-                        return;
-                    }
-                }
                 float frac = x / Math.max(1, getWidth());
                 if (frac < 0.35f || frac > 0.65f) {
                     zone[id] = frac < 0.35f ? ZONE_LEFT : ZONE_RIGHT;
@@ -516,9 +468,6 @@ public final class MainActivity extends Activity {
                     break;
                 case ZONE_RIGHT:
                     game.command("stick right 0 0", "stick right");
-                    break;
-                case ZONE_BUTTON:
-                    game.command("button " + buttons[buttonOf[id]].name + " up", null);
                     break;
                 default:
                     break;
@@ -583,7 +532,7 @@ public final class MainActivity extends Activity {
 
         @Override public boolean onTouchEvent(MotionEvent e) {
             if (phase != Phase.PLAYING) return true;
-            if (game.touchMode() && !padOn) {
+            if (!padOn) {
                 nativeTouch(e);
                 return true;
             }

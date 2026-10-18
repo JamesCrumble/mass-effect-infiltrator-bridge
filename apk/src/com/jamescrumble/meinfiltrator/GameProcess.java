@@ -54,7 +54,6 @@ final class GameProcess {
 
     private final Context ctx;
     private volatile Listener listener;
-    private final boolean touchMode;
     private final File root;
     private final File control;
     private final File commandsFile;
@@ -80,8 +79,6 @@ final class GameProcess {
         fifo = new File(root, "audio.pcm");
         File external = ctx.getExternalFilesDir(null);
         logFile = new File(external != null ? external : root, "meinfiltrator.log");
-        // pad_overlay.flag next to the log brings back the wrapper's own gamepad-style overlay.
-        touchMode = !new File(logFile.getParentFile(), "pad_overlay.flag").exists();
         perf = new PerfHint(ctx, msg -> appendLog("[perf] " + msg));
         gl = new GlBridge(new File(root, "gl_cmd.pipe").getPath(), new File(root, "gl_reply.pipe").getPath(),
                 msg -> appendLog("[gl] " + msg), perf::frame, perf::cpuLine);
@@ -114,7 +111,6 @@ final class GameProcess {
     GlBridge gl() { return gl; }
     File logFile() { return logFile; }
     boolean isRunning() { return running; }
-    boolean touchMode() { return touchMode; }
     void setListener(Listener l) { listener = l; }
     void setMuted(boolean m) { muted = m; }
 
