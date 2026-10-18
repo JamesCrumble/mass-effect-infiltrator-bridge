@@ -59,7 +59,7 @@ final class GameProcess {
     private final File commandsFile;
     private final File statusFile;
     private final File fifo;
-    private final File logFile;
+    private volatile File logFile;
     private final LinkedList<Cmd> queue = new LinkedList<>();
     private volatile boolean running;
     private volatile boolean muted = true;
@@ -77,8 +77,7 @@ final class GameProcess {
         commandsFile = new File(control, "commands");
         statusFile = new File(control, "status.json");
         fifo = new File(root, "audio.pcm");
-        File external = ctx.getExternalFilesDir(null);
-        logFile = new File(external != null ? external : root, "meinfiltrator.log");
+        logFile = new File(Storage.mainDir(ctx), "meinfiltrator.log");
         perf = new PerfHint(ctx, msg -> appendLog("[perf] " + msg));
         gl = new GlBridge(new File(root, "gl_cmd.pipe").getPath(), new File(root, "gl_reply.pipe").getPath(),
                 msg -> appendLog("[gl] " + msg), perf::frame, perf::cpuLine);
@@ -96,7 +95,7 @@ final class GameProcess {
         try { h = Integer.parseInt(SettingsActivity.load(ctx).getOrDefault("RENDER_HEIGHT", "720")); } catch (NumberFormatException ignored) { }
         h = Math.max(240, Math.min(h, 2160)) & ~1;
         int w = Math.round(h * (float) longSide / shortSide) & ~1;
-        String over = readText(new File(logFile.getParentFile(), "resolution.txt")).trim();
+        String over = readText(Storage.find(ctx, "resolution.txt")).trim();
         java.util.regex.Matcher mt = java.util.regex.Pattern.compile("(\\d+)x(\\d+)").matcher(over);
         if (mt.matches()) {
             w = Integer.parseInt(mt.group(1));
@@ -116,6 +115,11 @@ final class GameProcess {
 
     void start() throws Exception {
         stopStale();
+        // With all-files access everything of Android/data/<package>/files moves to BridgeGames/<package>, which
+        // then becomes the main folder; the log and the settings are looked up there from here on.
+        int moved = Storage.migrate(ctx, listener::onStatus);
+        logFile = new File(Storage.mainDir(ctx), "meinfiltrator.log");
+        if (moved > 0) appendLog("[wrapper] moved " + moved + " files to " + Storage.mainDir(ctx));
         String migrated = SaveMigration.importIfPresent(ctx);
         if (migrated != null) appendLog("[wrapper] " + migrated);
         prepare();
@@ -216,9 +220,8 @@ final class GameProcess {
         File libDir = new File(game, "lib/armeabi");
         libDir.mkdirs();
 
-        File external = ctx.getExternalFilesDir(null);
-        File apk = external == null ? null : firstWithSuffix(external, ".apk");
-        String where = external == null ? "Android/data/" + ctx.getPackageName() + "/files" : external.getPath();
+        File apk = Storage.firstWithSuffix(ctx, ".apk");
+        String where = Storage.describe(ctx);
         if (apk == null) {
             throw new IOException("Не найден оригинальный APK игры (Mass Effect Infiltrator 1.0.58 gamepad).\nПоложите его и cache-zip в папку:\n" + where);
         }
@@ -226,7 +229,7 @@ final class GameProcess {
         if (!ready.exists()) {
             listener.onStatus("Извлечение файлов игры из APK…");
             extractApk(apk, game);
-            File cache = firstWithSuffix(external, ".zip");
+            File cache = Storage.firstWithSuffix(ctx, ".zip");
             if (cache == null) {
                 throw new IOException("Не найден zip с данными игры (cache).\nПоложите его в папку:\n" + where);
             }
@@ -237,7 +240,7 @@ final class GameProcess {
         // An earlier build rewrote the string tables in a way the engine rejects: put the originals back once.
         File restored = new File(game, ".strings-restored2");
         if (!restored.exists()) {
-            File cache = external == null ? null : firstWithSuffix(external, ".zip");
+            File cache = Storage.firstWithSuffix(ctx, ".zip");
             if (cache == null) throw new IOException("Не найден zip с данными игры (cache).\nПоложите его в папку:\n" + where);
             listener.onStatus("Восстановление таблиц строк…");
             extractCache(cache, new File(game, "assets/published"), "strings/");
@@ -349,7 +352,10 @@ final class GameProcess {
         env.put("MASSEFFECT_NO_CURSOR", "1");
         env.put("MASSEFFECT_TOUCH", "1");
         env.put("MASSEFFECT_SYSTEM_FONT", "/system/fonts/RobotoStatic-Regular.ttf");
-        env.put("MASSEFFECT_SAVEDIR", new File(root, "save").getPath());
+        // Saves go to BridgeGames/<package>/save when there is access (mirrored to the private folder), else private.
+        File saveDir = Storage.saveDir(ctx, new File(root, "save"));
+        appendLog("[wrapper] saves: " + saveDir);
+        env.put("MASSEFFECT_SAVEDIR", saveDir.getPath());
         // The engine has its own limiter, fixed at 60: the port patches its constant from this.
         env.put("MASSEFFECT_TARGET_FPS", SettingsActivity.load(ctx).getOrDefault("FPS_LIMIT", "60"));
         // An ordinary touch phone to the engine: its own on-screen controls, no PowerA pad until one is used.
@@ -615,13 +621,6 @@ final class GameProcess {
             out.write((line + "\n").getBytes("US-ASCII"));
         } catch (IOException ignored) {
         }
-    }
-
-    private static File firstWithSuffix(File dir, String suffix) {
-        File[] files = dir.listFiles((d, n) -> n.endsWith(suffix));
-        if (files == null || files.length == 0) return null;
-        Arrays.sort(files);
-        return files[0];
     }
 
     private static int intField(String s, String key) {
