@@ -258,7 +258,7 @@ Never redistribute the game `.so` or extracted assets.
 (в APK как `libqemu.so`), все вызовы GLES2 уходят через пайп на GPU телефона (`src/gl_bridge.cpp` на стороне
 гостя, `apk/src/com/jamescrumble/meinfiltrator/GlBridge.java` на стороне Android). Сборка и установка:
 `tools/build_install.sh` (только `noinstall` — без установки), цикл отладки: `tools/iter.sh`.
-Данные игры (APK + cache zip, не в репозитории) кладутся в `Android/data/com.jamescrumble.meinfiltrator/files/`;
+Данные игры (APK + cache zip, не в репозитории) кладутся в `/sdcard/BridgeGames/com.jamescrumble.meinfiltrator/` (или в `Android/data/com.jamescrumble.meinfiltrator/files/`, читаются обе папки);
 первый запуск распаковывает их в приватную папку приложения.
 
 Игра этой сборки — чистый GLES2 (177 импортов `gl*`), а не GLES1 (упоминания GLES1 выше относятся к соседнему порту).
@@ -286,7 +286,7 @@ Down = 0x60000+14 = **0x6000e**, Move = 0x40000+14 = **0x4000e**, Up = 0x80000+1
 
 ### Отладка с компьютера без касаний по экрану
 
-Строки файла `inject.txt` рядом с логом (`Android/data/<pkg>/files/`) приложение один раз ставит в очередь команд порта
+Строки файла `inject.txt` рядом с логом (`BridgeGames/<pkg>/` или `Android/data/<pkg>/files/`) приложение один раз ставит в очередь команд порта
 и удаляет файл (`GameProcess.injectLoop`): `touch 1 x y id` / `touch 0 x y id` (down/up, координаты в пикселях рендера),
 `button a down|up`, `sleep <мс>`. Скриншот: `adb shell screencap -p`. Экран телефона должен быть включён.
 
