@@ -15,7 +15,7 @@ Oryon, только AArch64), подключён по USB, виден через
 - **Установка APK + перезапуск игры — можно всегда. Любая другая команда на телефоне (push, rm, shell, профиль,
   настройки, бенчмарки) — только после явного «да» пользователя.**
 - Перед крупными загрузками спрашивать. Ничего не ставить глобально (sudo нет); всё локально в папке проекта
-  (`jdk/`, `android-sdk/`, `sdl-arm/`, `qemu/out/`); сборки — в WSL/Docker.
+  (`../__shared-third-party__/{jdk,android-sdk,sdl-arm}`, `qemu/out/`); сборки — в WSL/Docker.
 - Скрипты на телефон/через Windows запускать так: `wsl -d Ubuntu-20.04 --cd /home/james/probe -e sh mass-effect-infiltrator-probe/tools/run.sh mass-effect-infiltrator-probe/tools/<x>.sh`.
 
 ## Что есть в папке
@@ -24,7 +24,7 @@ Oryon, только AArch64), подключён по USB, виден через
 | `src/ android/ loader/ jni/ thunks/` | исходный порт EapRules (bionic-лоадер + JNI + libc-thunks), собирается `./build.sh` -> `build/masseffect` (armhf) |
 | `gamebin/` | оригиналы пользователя: `Mass-Effect-Infiltrator-v1-0-58-Unlocked.apk`, `00657-...-cache.zip` (не в git) |
 | `medata/masseffect/` | распакованная игра: `lib/armeabi/libMassEffect.so` (SHA1 ea58b733… совпал), `assets/` + `assets/published/` (кэш, ~740 МБ) |
-| `jdk/ android-sdk/ sdl-arm/` | локальные тулчейны (скопированы из nova3probe) |
+| `../__shared-third-party__/{jdk,android-sdk,sdl-arm}` | общие тулчейны всех проектов (раньше — копии из nova3probe) |
 | `qemu/out/qemu-arm-D.stripped`, `qemu/patches/nova3.patch` | наш qemu-arm 11.1.2 (вариант D: быстрый float/NEON, lookup_tb_ptr), скопирован из nova3probe |
 | `env.sh`, `build.sh`, `tools/` | окружение, сборка, скрипты (adb, pull_log, fps, grep_log, run.sh, cpu_diag, timeline) |
 
@@ -103,7 +103,7 @@ Oryon, только AArch64), подключён по USB, виден через
 - **qemu вариант E** (в APK по умолчанию, `tools/build_install.sh`; `ME_QEMU_VARIANT=D` возвращает прежний): NEON f32
   (add/sub/mul/mla/mls, в т.ч. по скаляру) считается при обычном FPCR хоста, без переключения в FZ+DN; элементы с денормалями/NaN
   на входе или с результатом в (0, наименьшее нормальное] считаются под разовым переключением FPCR (`neon_f32_std`).
-  Флаг сборки `-DNOVA3_NEON_NOFPCR`, правка в `../nova3probe/qemu-src/.../target/arm/tcg/vec_helper.c` (под `#ifdef`, вариант D
+  Флаг сборки `-DNOVA3_NEON_NOFPCR`, правка в `../__shared-third-party__/qemu-src/nova3probe/.../target/arm/tcg/vec_helper.c` (под `#ifdef`, вариант D
   не затронут), патч поверх nova3.patch — `qemu/patches/neon_nofpcr.patch`. Сборка:
   `sh ../nova3probe/tools/qemu_build.sh E "-DNOVA3_JMP_BITS=16 -DNOVA3_FAST_LOOKUP -DNOVA3_NEON_NOFPCR -O3 -march=armv8.2-a+lse+rcpc+dotprod -mtune=neoverse-v1"`,
   затем скопировать `qemu-arm-E.stripped` в `qemu/out/`.
